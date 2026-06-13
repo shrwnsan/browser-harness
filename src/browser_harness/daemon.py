@@ -101,6 +101,19 @@ def _ws_from_devtools_active_port(http_url: str) -> str | None:
     return None
 
 
+def _rewrite_localhost_ws(ws_url, original_host):
+    """Rewrite ws://localhost/... to ws://<original_host>/... for Docker networking.
+
+    Chromium on a remote host returns webSocketDebuggerUrl with localhost,
+    which is unreachable from a different container.  This rewrites it to the
+    original HTTP host so cross-container WS connections work.
+    """
+    if ws_url.startswith("ws://localhost") or ws_url.startswith("wss://localhost"):
+        scheme = "wss" if ws_url.startswith("wss:") else "ws"
+        ws_url = ws_url.replace(f"{scheme}://localhost/", f"{scheme}://{original_host}/")
+    return ws_url
+
+
 def get_ws_url():
     if url := os.environ.get("BU_CDP_WS"):
         return url
@@ -111,9 +124,12 @@ def get_ws_url():
         deadline = time.time() + 30
         last_err = None
         base_url = url.rstrip("/")
+        from urllib.parse import urlparse as _urlparse
+        original_host = _urlparse(base_url).netloc  # e.g. "chromium-headless:9222"
         while time.time() < deadline:
             try:
-                return json.loads(urllib.request.urlopen(f"{base_url}/json/version", timeout=5).read())["webSocketDebuggerUrl"]
+                ws = json.loads(urllib.request.urlopen(f"{base_url}/json/version", timeout=5).read())["webSocketDebuggerUrl"]
+                return _rewrite_localhost_ws(ws, original_host)
             except urllib.error.HTTPError as e:
                 last_err = e
                 if e.code == 404 and (ws := _ws_from_devtools_active_port(url)):
